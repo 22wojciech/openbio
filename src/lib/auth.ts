@@ -61,6 +61,20 @@ export const auth = betterAuth({
       });
     },
   },
+  // Allow sign-in from the production domain, Vercel URLs and local dev.
+  // Otherwise Better Auth rejects requests with "Invalid origin".
+  trustedOrigins: [
+    process.env.NEXT_PUBLIC_URL,
+    process.env.BETTER_AUTH_URL,
+    'http://localhost:3000',
+    process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined,
+    process.env.VERCEL_BRANCH_URL
+      ? `https://${process.env.VERCEL_BRANCH_URL}`
+      : undefined,
+    process.env.VERCEL_PROJECT_PRODUCTION_URL
+      ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+      : undefined,
+  ].filter((origin): origin is string => Boolean(origin)),
   socialProviders: {
     ...(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET
       ? {
