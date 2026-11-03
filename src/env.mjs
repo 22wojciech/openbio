@@ -10,7 +10,8 @@ export const env = createEnv({
     RESEND_API_KEY: z.string().min(1).optional(),
     UPSTASH_REDIS_REST_URL: z.string().url().optional(),
     UPSTASH_REDIS_REST_TOKEN: z.string().min(1).optional(),
-    BLOB_READ_WRITE_TOKEN: z.string().min(1),
+    // Optional: only needed for image uploads (avatar, bento images).
+    BLOB_READ_WRITE_TOKEN: z.string().min(1).optional(),
     POLAR_ACCESS_TOKEN: z.string().min(1).optional(),
     POLAR_WEBHOOK_SECRET: z.string().min(1).optional(),
     POLAR_PRO_MONTHLY_PRODUCT_ID: z.string().min(1).optional(),
