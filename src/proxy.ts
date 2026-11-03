@@ -62,6 +62,20 @@ async function resolveCustomDomain(hostname: string): Promise<string | null> {
   if (!sqlClient) {
     sqlClient = postgres(dbUrl, { prepare: false, max: 1 });
   }
+
+  // Single-owner mode: the owner's domain always shows the owner's profile.
+  const ownerDomain = process.env.OWNER_DOMAIN?.toLowerCase();
+  const bareHost = hostname
+    .toLowerCase()
+    .replace(/:\d+$/, '')
+    .replace(/^www\./, '');
+  if (ownerDomain && bareHost === ownerDomain) {
+    const first = await sqlClient<
+      { link: string }[]
+    >`SELECT link FROM link ORDER BY created_at ASC LIMIT 1`;
+    return first[0]?.link ?? null;
+  }
+
   const rows = await sqlClient<
     { link: string }[]
   >`SELECT link FROM link WHERE custom_domain = ${hostname} LIMIT 1`;
