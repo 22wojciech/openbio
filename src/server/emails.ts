@@ -4,7 +4,7 @@ import { env } from '@/env.mjs';
 import type { ReactElement } from 'react';
 import { Resend } from 'resend';
 
-const resend = new Resend(env.RESEND_API_KEY);
+const resend = env.RESEND_API_KEY ? new Resend(env.RESEND_API_KEY) : null;
 
 export interface Email {
   react: ReactElement;
@@ -14,6 +14,10 @@ export interface Email {
 }
 
 export const sendEmail = async (email: Email) => {
+  // Email is optional: without RESEND_API_KEY messages are skipped.
+  if (!resend) {
+    return null;
+  }
   return await resend.emails.send({
     from: 'Vanxh <hello@vanxh.dev>',
     ...email,

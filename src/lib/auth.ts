@@ -9,6 +9,7 @@ import {
 } from '@polar-sh/better-auth';
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
+import { APIError } from 'better-auth/api';
 import { nextCookies } from 'better-auth/next-js';
 
 function getPlanFromProductId(productId: string): 'pro' | 'business' {
@@ -31,7 +32,8 @@ export const auth = betterAuth({
   }),
   emailAndPassword: {
     enabled: true,
-    requireEmailVerification: true,
+    // Verification emails need Resend; without it the owner can sign in directly.
+    requireEmailVerification: Boolean(process.env.RESEND_API_KEY),
     sendVerificationEmail: async ({
       user,
       url,
@@ -88,6 +90,16 @@ export const auth = betterAuth({
   databaseHooks: {
     user: {
       create: {
+        // Single-owner mode: when OWNER_EMAIL is set, only that address can register.
+        before: async (user) => {
+          const owner = process.env.OWNER_EMAIL?.toLowerCase();
+          if (owner && user.email.toLowerCase() !== owner) {
+            throw new APIError('FORBIDDEN', {
+              message: 'Registration is closed.',
+            });
+          }
+          return { data: user };
+        },
         after: async (user) => {
           const { sendEmail } = await import('@/server/emails');
           const Welcome = (await import('@/components/emails/welcome')).default;
@@ -102,158 +114,166 @@ export const auth = betterAuth({
   },
   plugins: [
     nextCookies(),
-    polarPlugin({
-      client: polar,
-      createCustomerOnSignUp: true,
-      use: [
-        checkout({
-          products: [
-            {
-              productId: process.env.POLAR_PRO_MONTHLY_PRODUCT_ID ?? '',
-              slug: 'pro-monthly',
-            },
-            {
-              productId: process.env.POLAR_PRO_YEARLY_PRODUCT_ID ?? '',
-              slug: 'pro-yearly',
-            },
-            {
-              productId: process.env.POLAR_BUSINESS_MONTHLY_PRODUCT_ID ?? '',
-              slug: 'business-monthly',
-            },
-            {
-              productId: process.env.POLAR_BUSINESS_YEARLY_PRODUCT_ID ?? '',
-              slug: 'business-yearly',
-            },
-          ],
-          successUrl: '/app?upgraded=true',
-          authenticatedUsersOnly: true,
-        }),
-        portal(),
-        webhooks({
-          secret: process.env.POLAR_WEBHOOK_SECRET ?? '',
-          onSubscriptionCreated: async (payload) => {
-            const sub = payload.data;
-            const email = sub.customer.email;
-            if (!email) {
-              return;
-            }
+    // Billing is optional: the Polar plugin is only enabled when a token is set.
+    ...(process.env.POLAR_ACCESS_TOKEN
+      ? [
+          polarPlugin({
+            client: polar,
+            createCustomerOnSignUp: true,
+            use: [
+              checkout({
+                products: [
+                  {
+                    productId: process.env.POLAR_PRO_MONTHLY_PRODUCT_ID ?? '',
+                    slug: 'pro-monthly',
+                  },
+                  {
+                    productId: process.env.POLAR_PRO_YEARLY_PRODUCT_ID ?? '',
+                    slug: 'pro-yearly',
+                  },
+                  {
+                    productId:
+                      process.env.POLAR_BUSINESS_MONTHLY_PRODUCT_ID ?? '',
+                    slug: 'business-monthly',
+                  },
+                  {
+                    productId:
+                      process.env.POLAR_BUSINESS_YEARLY_PRODUCT_ID ?? '',
+                    slug: 'business-yearly',
+                  },
+                ],
+                successUrl: '/app?upgraded=true',
+                authenticatedUsersOnly: true,
+              }),
+              portal(),
+              webhooks({
+                secret: process.env.POLAR_WEBHOOK_SECRET ?? '',
+                onSubscriptionCreated: async (payload) => {
+                  const sub = payload.data;
+                  const email = sub.customer.email;
+                  if (!email) {
+                    return;
+                  }
 
-            const { eq } = await import('drizzle-orm');
-            const found = await db.query.user.findFirst({
-              where: (u, { eq }) => eq(u.email, email),
-            });
-            if (!found) {
-              return;
-            }
+                  const { eq } = await import('drizzle-orm');
+                  const found = await db.query.user.findFirst({
+                    where: (u, { eq }) => eq(u.email, email),
+                  });
+                  if (!found) {
+                    return;
+                  }
 
-            const plan = getPlanFromProductId(sub.productId);
+                  const plan = getPlanFromProductId(sub.productId);
 
-            await db
-              .update(schema.user)
-              .set({
-                plan,
-                polarCustomerId: sub.customerId,
-                subscriptionId: sub.id,
-                subscriptionEndsAt: sub.currentPeriodEnd,
-              })
-              .where(eq(schema.user.id, found.id));
+                  await db
+                    .update(schema.user)
+                    .set({
+                      plan,
+                      polarCustomerId: sub.customerId,
+                      subscriptionId: sub.id,
+                      subscriptionEndsAt: sub.currentPeriodEnd,
+                    })
+                    .where(eq(schema.user.id, found.id));
 
-            const { sendEmail } = await import('@/server/emails');
-            const UpgradedEmail = (await import('@/components/emails/upgraded'))
-              .default;
-            await sendEmail({
-              to: [email],
-              subject: "You've upgraded to OpenBio Pro!",
-              react: UpgradedEmail(),
-            });
-          },
-          onSubscriptionActive: async (payload) => {
-            const sub = payload.data;
-            const email = sub.customer.email;
-            if (!email) {
-              return;
-            }
+                  const { sendEmail } = await import('@/server/emails');
+                  const UpgradedEmail = (
+                    await import('@/components/emails/upgraded')
+                  ).default;
+                  await sendEmail({
+                    to: [email],
+                    subject: "You've upgraded to OpenBio Pro!",
+                    react: UpgradedEmail(),
+                  });
+                },
+                onSubscriptionActive: async (payload) => {
+                  const sub = payload.data;
+                  const email = sub.customer.email;
+                  if (!email) {
+                    return;
+                  }
 
-            const { eq } = await import('drizzle-orm');
-            const found = await db.query.user.findFirst({
-              where: (u, { eq }) => eq(u.email, email),
-            });
-            if (!found) {
-              return;
-            }
+                  const { eq } = await import('drizzle-orm');
+                  const found = await db.query.user.findFirst({
+                    where: (u, { eq }) => eq(u.email, email),
+                  });
+                  if (!found) {
+                    return;
+                  }
 
-            const plan = getPlanFromProductId(sub.productId);
+                  const plan = getPlanFromProductId(sub.productId);
 
-            await db
-              .update(schema.user)
-              .set({
-                plan,
-                subscriptionId: sub.id,
-                subscriptionEndsAt: sub.currentPeriodEnd,
-              })
-              .where(eq(schema.user.id, found.id));
-          },
-          onSubscriptionCanceled: async (payload) => {
-            const sub = payload.data;
-            const email = sub.customer.email;
-            if (!email) {
-              return;
-            }
+                  await db
+                    .update(schema.user)
+                    .set({
+                      plan,
+                      subscriptionId: sub.id,
+                      subscriptionEndsAt: sub.currentPeriodEnd,
+                    })
+                    .where(eq(schema.user.id, found.id));
+                },
+                onSubscriptionCanceled: async (payload) => {
+                  const sub = payload.data;
+                  const email = sub.customer.email;
+                  if (!email) {
+                    return;
+                  }
 
-            const { eq } = await import('drizzle-orm');
-            const found = await db.query.user.findFirst({
-              where: (u, { eq }) => eq(u.email, email),
-            });
-            if (!found) {
-              return;
-            }
+                  const { eq } = await import('drizzle-orm');
+                  const found = await db.query.user.findFirst({
+                    where: (u, { eq }) => eq(u.email, email),
+                  });
+                  if (!found) {
+                    return;
+                  }
 
-            await db
-              .update(schema.user)
-              .set({
-                plan: 'free',
-                subscriptionId: null,
-                subscriptionEndsAt: null,
-              })
-              .where(eq(schema.user.id, found.id));
+                  await db
+                    .update(schema.user)
+                    .set({
+                      plan: 'free',
+                      subscriptionId: null,
+                      subscriptionEndsAt: null,
+                    })
+                    .where(eq(schema.user.id, found.id));
 
-            const { sendEmail } = await import('@/server/emails');
-            const CancelledEmail = (
-              await import('@/components/emails/cancelled')
-            ).default;
-            await sendEmail({
-              to: [email],
-              subject: 'Your OpenBio Pro subscription has been cancelled',
-              react: CancelledEmail(),
-            });
-          },
-          onSubscriptionRevoked: async (payload) => {
-            const sub = payload.data;
-            const email = sub.customer.email;
-            if (!email) {
-              return;
-            }
+                  const { sendEmail } = await import('@/server/emails');
+                  const CancelledEmail = (
+                    await import('@/components/emails/cancelled')
+                  ).default;
+                  await sendEmail({
+                    to: [email],
+                    subject: 'Your OpenBio Pro subscription has been cancelled',
+                    react: CancelledEmail(),
+                  });
+                },
+                onSubscriptionRevoked: async (payload) => {
+                  const sub = payload.data;
+                  const email = sub.customer.email;
+                  if (!email) {
+                    return;
+                  }
 
-            const { eq } = await import('drizzle-orm');
-            const found = await db.query.user.findFirst({
-              where: (u, { eq }) => eq(u.email, email),
-            });
-            if (!found) {
-              return;
-            }
+                  const { eq } = await import('drizzle-orm');
+                  const found = await db.query.user.findFirst({
+                    where: (u, { eq }) => eq(u.email, email),
+                  });
+                  if (!found) {
+                    return;
+                  }
 
-            await db
-              .update(schema.user)
-              .set({
-                plan: 'free',
-                subscriptionId: null,
-                subscriptionEndsAt: null,
-              })
-              .where(eq(schema.user.id, found.id));
-          },
-        }),
-      ],
-    }),
+                  await db
+                    .update(schema.user)
+                    .set({
+                      plan: 'free',
+                      subscriptionId: null,
+                      subscriptionEndsAt: null,
+                    })
+                    .where(eq(schema.user.id, found.id));
+                },
+              }),
+            ],
+          }),
+        ]
+      : []),
   ],
 });
 

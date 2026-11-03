@@ -1,6 +1,6 @@
-import { neon } from '@neondatabase/serverless';
 import { getSessionCookie } from 'better-auth/cookies';
 import { type NextRequest, NextResponse } from 'next/server';
+import postgres from 'postgres';
 
 const ROOT_DOMAIN = process.env.NEXT_PUBLIC_ROOT_DOMAIN ?? 'openbio.app';
 const IP_REGEX = /^\d+\.\d+\.\d+\.\d+/;
@@ -52,17 +52,20 @@ function isCustomDomain(hostname: string) {
   return !hostname.endsWith(ROOT_DOMAIN) && !isPlainLocalhost(hostname);
 }
 
+let sqlClient: ReturnType<typeof postgres> | null = null;
+
 async function resolveCustomDomain(hostname: string): Promise<string | null> {
   const dbUrl = process.env.DATABASE_URL;
   if (!dbUrl) {
     return null;
   }
-  const sql = neon(dbUrl);
-  const rows = await sql(
-    'SELECT link FROM link WHERE custom_domain = $1 LIMIT 1',
-    [hostname]
-  );
-  return (rows[0] as { link: string } | undefined)?.link ?? null;
+  if (!sqlClient) {
+    sqlClient = postgres(dbUrl, { prepare: false, max: 1 });
+  }
+  const rows = await sqlClient<
+    { link: string }[]
+  >`SELECT link FROM link WHERE custom_domain = ${hostname} LIMIT 1`;
+  return rows[0]?.link ?? null;
 }
 
 function rewriteToProfile(request: NextRequest, slug: string) {
